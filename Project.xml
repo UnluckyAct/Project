@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Project</name>
+    </assembly>
+    <members>
+        <member name="M:Project.Controllers.AccountController.GetUsers">
+            <summary>
+            Retrieve all users
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.GetUser(System.String)">
+            <summary>
+            Retrieve User by Id
+            </summary>
+            <param name="id">user id</param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.GetUserByEmail(System.String)">
+            <summary>
+            Retrieve User by Email
+            </summary>
+            <param name="email">User email (username)</param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.DeleteUserAsync(System.String)">
+            <summary>
+            Delete User 
+            </summary>
+            <param name="email">User email (username)</param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.DeleteAdminUserAsync(System.String)">
+            <summary>
+            Delete User By Admin
+            </summary>
+            <param name="email">User email (username)</param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.UserUpdate(Project.Models.UserUpdateBindingModel)">
+            <summary>
+            Update User by User
+            </summary>
+            <param name="model"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.AdminUpdate(Project.Models.AdminUpdateBindingModel)">
+            <summary>
+            Update User by Admin
+            </summary>
+            <param name="model"></param>
+            <returns></returns>
+        </member>
+    </members>
+</doc>
