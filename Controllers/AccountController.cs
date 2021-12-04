@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Net;
 using System.Net.Http;
 using System.Security.Claims;
@@ -11,6 +12,7 @@ using System.Web.Http;
 using System.Web.Http.Description;
 using System.Web.Http.ModelBinding;
 using System.Web.Http.Results;
+using Microsoft.Ajax.Utilities;
 using Microsoft.AspNet.Identity;
 using Microsoft.AspNet.Identity.EntityFramework;
 using Microsoft.AspNet.Identity.Owin;
@@ -20,6 +22,7 @@ using Microsoft.Owin.Security.OAuth;
 using Project.Models;
 using Project.Providers;
 using Project.Results;
+using Expression = System.Linq.Expressions.Expression;
 
 namespace Project.Controllers
 {
@@ -39,28 +42,33 @@ namespace Project.Controllers
 
         public ISecureDataFormat<AuthenticationTicket> AccessTokenFormat { get; private set; }
 
-        // GET api/Account/UserInfo
-        [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
-        [Route("UserInfo")]
-        public UserInfoViewModel GetUserInfo()
-        {
-            ExternalLoginData externalLogin = ExternalLoginData.FromIdentity(User.Identity as ClaimsIdentity);
-
-            return new UserInfoViewModel
-            {
-                Email = User.Identity.GetUserName()
-            };
-        }
 
         /// <summary>
         /// Retrieve all users
         /// </summary>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, User Manager")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [Route("AllUsers")]
-        public List<UserInfo> GetUsers()
+        [HttpGet]
+        public async Task<IHttpActionResult> GetUsersAsync([FromUri] int pageNumber, int pageSize, string orderBy)
         {
-            var users = AppUserManager.Users.Where(u=>!u.Deleted);
+            var t = AppUserManager.Users.Where(u => !u.Deleted);
+
+            int count = AppUserManager.Users.Count(u => !u.Deleted);
+            int pages = count / pageSize;
+            if (count == 0)
+                return NotFound();
+
+            if (count % pageSize != 0)
+            {
+                if (pages == 0)
+                    pageSize = count;
+                pages += 1;
+            }
+
+            var users = GetOrderExpression(t, orderBy).Skip((pageNumber - 1) * pageSize).Take(pageSize).ToList();
+
             List<UserInfo> userInfos = new List<UserInfo>();
             foreach (var user in users)
             {
@@ -70,10 +78,101 @@ namespace Project.Controllers
                     Email = user.Email,
                     FirstName = user.FirstName,
                     LastName = user.LastName,
-                    UserType = user.UserType
+                    UserType = user.UserType,
+                    Roles = (await AppUserManager.GetRolesAsync(user.Id)).ToArray(),
+                    JoinDate = user.JoinDate.ToUniversalTime()
                 });
             }
-            return userInfos;
+
+            var userTable = new UserTable()
+            {
+                UsersList = userInfos,
+                Pages = pages
+            };
+
+            return Ok(userTable);
+        }
+
+        [Authorize(Roles = "Administrator")]
+        [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
+        [Route("GetBannedUsers")]
+        [HttpGet]
+        public async Task<IHttpActionResult> GetBannedUsersAsync([FromUri] int pageNumber, int pageSize, string orderBy)
+        {
+            Console.WriteLine(pageNumber);
+            var t = AppUserManager.Users.Where(u => u.Deleted);
+            int count = AppUserManager.Users.Count(u => u.Deleted) / pageSize;
+            if (count == 0)
+                return NotFound();
+            if (count % pageSize != 0)
+            {
+                count += 1;
+            }
+            var users = GetOrderExpression(t, orderBy).Skip((pageNumber - 1) * pageSize).Take(pageSize).ToList();
+
+            List<UserInfo> userInfos = new List<UserInfo>();
+            foreach (var user in users)
+            {
+                userInfos.Add(new UserInfo()
+                {
+                    Id = user.Id,
+                    Email = user.Email,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    UserType = user.UserType,
+                    Roles = (await AppUserManager.GetRolesAsync(user.Id)).ToArray(),
+                    JoinDate = user.JoinDate.ToUniversalTime()
+                });
+            }
+
+            var userTable = new UserTable()
+            {
+                UsersList = userInfos,
+                Pages = count
+            };
+
+            return Ok(userTable);
+        }
+
+        /// <summary>
+        /// Unban User
+        /// </summary>
+        /// <param name="email"></param>
+        /// <returns></returns>
+        [Authorize(Roles = "Administrator")]
+        [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
+        [Route("UnbanUser")]
+        [HttpPatch]
+        public async Task<IHttpActionResult> UserUnban([FromUri] string email)
+        {
+            var appUser = (from applicationUser in AppUserManager.Users
+                where applicationUser.Email == email
+                select applicationUser).SingleOrDefault();
+            if (appUser == null)
+            {
+                return NotFound();
+            }
+
+            appUser.Deleted = false;
+            IdentityResult result = await AppUserManager.UpdateAsync(appUser);
+
+            if (!result.Succeeded)
+            {
+                return InternalServerError();
+            }
+
+            string[] rolesToAssign = new string[1];
+            rolesToAssign[0] = "User";
+
+            IdentityResult addResult = await this.AppUserManager.AddToRolesAsync(appUser.Id, rolesToAssign);
+
+            if (!addResult.Succeeded)
+            {
+                ModelState.AddModelError("", "Failed to add user");
+                IdentityResult result2 = await AppUserManager.DeleteAsync(appUser);
+                return BadRequest(ModelState);
+            }
+            return StatusCode(HttpStatusCode.NoContent);
         }
 
         /// <summary>
@@ -81,6 +180,7 @@ namespace Project.Controllers
         /// </summary>
         /// <param name="id">user id</param>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, User Manager")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [ResponseType(typeof(UserInfo))]
         [Route("Users/{id}")]
@@ -110,11 +210,12 @@ namespace Project.Controllers
         /// </summary>
         /// <param name="email">User email (username)</param>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, User Manager, User")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [ResponseType(typeof(UserInfo))]
         [Route("Users")]
         [HttpGet]
-        public IHttpActionResult GetUserByEmail([FromUri] string email)
+        public async Task<IHttpActionResult> GetUserByEmailAsync([FromUri] string email)
         {
 
             var appUser = (from applicationUser in AppUserManager.Users
@@ -123,7 +224,7 @@ namespace Project.Controllers
 
             if (appUser == null)
                 return NotFound();
-
+            
             var user = new UserInfo()
             {
                 Id = appUser.Id,
@@ -131,42 +232,17 @@ namespace Project.Controllers
                 FirstName = appUser.FirstName,
                 LastName = appUser.LastName,
                 UserType = appUser.UserType,
-                //Deleted = appUser.Deleted
+                Roles = (await AppUserManager.GetRolesAsync(appUser.Id)).ToArray(),
+                JoinDate = appUser.JoinDate.ToUniversalTime()
             };
             return Ok(user);
         }
-        /*
-        /// <summary>
-        /// Delete Admin
-        /// </summary>
-        /// <param name="email">User email (username)</param>
-        /// <returns></returns>
-        [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
-        [Route("AdminUserDelete")]
-        [HttpDelete]
-        public async Task<IHttpActionResult> DeleteAdminAsync([FromUri] string email)
-        {
-            var appUser = (from applicationUser in UserManager.Users
-                where applicationUser.Email == email
-                select applicationUser).SingleOrDefault();
-
-            if (appUser == null)
-                return NotFound();
-
-            IdentityResult result = await UserManager.DeleteAsync(appUser);
-            if (!result.Succeeded)
-            {
-                return InternalServerError(new Exception(string.Join(";", result.Errors)));
-            }
-            return StatusCode(HttpStatusCode.NoContent);
-        }
-        */
-
         /// <summary>
         /// Delete User 
         /// </summary>
         /// <param name="email">User email (username)</param>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, Manager, User")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [Route("UserDelete")]
         [HttpDelete]
@@ -184,15 +260,25 @@ namespace Project.Controllers
             {
                 return InternalServerError(new Exception(string.Join(";", result.Errors)));
             }
+
+            var currentRoles = await this.AppUserManager.GetRolesAsync(appUser.Id);
+            IdentityResult removeResult = await this.AppUserManager.RemoveFromRolesAsync(appUser.Id, currentRoles.ToArray());
+            if (!removeResult.Succeeded)
+            {
+                ModelState.AddModelError("", "Failed to Delete user roles");
+                return BadRequest(ModelState);
+            }
+
             return StatusCode(HttpStatusCode.NoContent);
         }
-        
+
 
         /// <summary>
         /// Delete User By Admin
         /// </summary>
         /// <param name="email">User email (username)</param>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, User Manager")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [Route("AdminUserDelete")]
         [HttpDelete]
@@ -213,6 +299,14 @@ namespace Project.Controllers
                 return InternalServerError();
             }
 
+            var currentRoles = await this.AppUserManager.GetRolesAsync(appUser.Id);
+            IdentityResult removeResult = await this.AppUserManager.RemoveFromRolesAsync(appUser.Id, currentRoles.ToArray());
+            if (!removeResult.Succeeded)
+            {
+                ModelState.AddModelError("", "Failed to Delete user roles");
+                return BadRequest(ModelState);
+            }
+
             return StatusCode(HttpStatusCode.NoContent);
         }
 
@@ -221,6 +315,7 @@ namespace Project.Controllers
         /// </summary>
         /// <param name="model"></param>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, Manager, User")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [Route("UserUpdate")]
         [HttpPatch]
@@ -252,6 +347,7 @@ namespace Project.Controllers
         /// </summary>
         /// <param name="model"></param>
         /// <returns></returns>
+        [Authorize(Roles = "Administrator, User Manager")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
         [Route("AdminUpdate")]
         [HttpPatch]
@@ -281,51 +377,12 @@ namespace Project.Controllers
         }
 
         // POST api/Account/Logout
+        [Authorize(Roles = "Administrator, User Manager, User")]
         [Route("Logout")]
         public IHttpActionResult Logout()
         {
             Authentication.SignOut(CookieAuthenticationDefaults.AuthenticationType);
-            return Ok();
-        }
-
-        // GET api/Account/ManageInfo?returnUrl=%2F&generateState=true
-        [Route("ManageInfo")]
-        public async Task<ManageInfoViewModel> GetManageInfo(string returnUrl, bool generateState = false)
-        {
-            IdentityUser user = await AppUserManager.FindByIdAsync(User.Identity.GetUserId());
-
-            if (user == null)
-            {
-                return null;
-            }
-
-            List<UserLoginInfoViewModel> logins = new List<UserLoginInfoViewModel>();
-
-            foreach (IdentityUserLogin linkedAccount in user.Logins)
-            {
-                logins.Add(new UserLoginInfoViewModel
-                {
-                    LoginProvider = linkedAccount.LoginProvider,
-                    ProviderKey = linkedAccount.ProviderKey
-                });
-            }
-
-            if (user.PasswordHash != null)
-            {
-                logins.Add(new UserLoginInfoViewModel
-                {
-                    LoginProvider = LocalLoginProvider,
-                    ProviderKey = user.UserName,
-                });
-            }
-
-            return new ManageInfoViewModel
-            {
-                LocalLoginProvider = LocalLoginProvider,
-                Email = user.UserName,
-                Logins = logins,
-                ExternalLoginProviders = GetExternalLogins(returnUrl, generateState)
-            };
+            return StatusCode(HttpStatusCode.NoContent);
         }
 
         // POST api/Account/ChangePassword
@@ -367,170 +424,6 @@ namespace Project.Controllers
             return Ok();
         }
 
-        // POST api/Account/AddExternalLogin
-        [Route("AddExternalLogin")]
-        public async Task<IHttpActionResult> AddExternalLogin(AddExternalLoginBindingModel model)
-        {
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
-
-            Authentication.SignOut(DefaultAuthenticationTypes.ExternalCookie);
-
-            AuthenticationTicket ticket = AccessTokenFormat.Unprotect(model.ExternalAccessToken);
-
-            if (ticket == null || ticket.Identity == null || (ticket.Properties != null
-                && ticket.Properties.ExpiresUtc.HasValue
-                && ticket.Properties.ExpiresUtc.Value < DateTimeOffset.UtcNow))
-            {
-                return BadRequest("External login failure.");
-            }
-
-            ExternalLoginData externalData = ExternalLoginData.FromIdentity(ticket.Identity);
-
-            if (externalData == null)
-            {
-                return BadRequest("The external login is already associated with an account.");
-            }
-
-            IdentityResult result = await AppUserManager.AddLoginAsync(User.Identity.GetUserId(),
-                new UserLoginInfo(externalData.LoginProvider, externalData.ProviderKey));
-
-            if (!result.Succeeded)
-            {
-                return GetErrorResult(result);
-            }
-
-            return Ok();
-        }
-
-        // POST api/Account/RemoveLogin
-        [Route("RemoveLogin")]
-        public async Task<IHttpActionResult> RemoveLogin(RemoveLoginBindingModel model)
-        {
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
-
-            IdentityResult result;
-
-            if (model.LoginProvider == LocalLoginProvider)
-            {
-                result = await AppUserManager.RemovePasswordAsync(User.Identity.GetUserId());
-            }
-            else
-            {
-                result = await AppUserManager.RemoveLoginAsync(User.Identity.GetUserId(),
-                    new UserLoginInfo(model.LoginProvider, model.ProviderKey));
-            }
-
-            if (!result.Succeeded)
-            {
-                return GetErrorResult(result);
-            }
-
-            return Ok();
-        }
-
-        // GET api/Account/ExternalLogin
-        [OverrideAuthentication]
-        [HostAuthentication(DefaultAuthenticationTypes.ExternalCookie)]
-        [AllowAnonymous]
-        [Route("ExternalLogin", Name = "ExternalLogin")]
-        public async Task<IHttpActionResult> GetExternalLogin(string provider, string error = null)
-        {
-            if (error != null)
-            {
-                return Redirect(Url.Content("~/") + "#error=" + Uri.EscapeDataString(error));
-            }
-
-            if (!User.Identity.IsAuthenticated)
-            {
-                return new ChallengeResult(provider, this);
-            }
-
-            ExternalLoginData externalLogin = ExternalLoginData.FromIdentity(User.Identity as ClaimsIdentity);
-
-            if (externalLogin == null)
-            {
-                return InternalServerError();
-            }
-
-            if (externalLogin.LoginProvider != provider)
-            {
-                Authentication.SignOut(DefaultAuthenticationTypes.ExternalCookie);
-                return new ChallengeResult(provider, this);
-            }
-
-            ApplicationUser user = await AppUserManager.FindAsync(new UserLoginInfo(externalLogin.LoginProvider,
-                externalLogin.ProviderKey));
-
-            bool hasRegistered = user != null;
-
-            if (hasRegistered)
-            {
-                Authentication.SignOut(DefaultAuthenticationTypes.ExternalCookie);
-
-                ClaimsIdentity oAuthIdentity = await user.GenerateUserIdentityAsync(AppUserManager,
-                   OAuthDefaults.AuthenticationType);
-                ClaimsIdentity cookieIdentity = await user.GenerateUserIdentityAsync(AppUserManager,
-                    CookieAuthenticationDefaults.AuthenticationType);
-
-                AuthenticationProperties properties = ApplicationOAuthProvider.CreateProperties(user.UserName);
-                Authentication.SignIn(properties, oAuthIdentity, cookieIdentity);
-            }
-            else
-            {
-                IEnumerable<Claim> claims = externalLogin.GetClaims();
-                ClaimsIdentity identity = new ClaimsIdentity(claims, OAuthDefaults.AuthenticationType);
-                Authentication.SignIn(identity);
-            }
-
-            return Ok();
-        }
-
-        // GET api/Account/ExternalLogins?returnUrl=%2F&generateState=true
-        [AllowAnonymous]
-        [Route("ExternalLogins")]
-        public IEnumerable<ExternalLoginViewModel> GetExternalLogins(string returnUrl, bool generateState = false)
-        {
-            IEnumerable<AuthenticationDescription> descriptions = Authentication.GetExternalAuthenticationTypes();
-            List<ExternalLoginViewModel> logins = new List<ExternalLoginViewModel>();
-
-            string state;
-
-            if (generateState)
-            {
-                const int strengthInBits = 256;
-                state = RandomOAuthStateGenerator.Generate(strengthInBits);
-            }
-            else
-            {
-                state = null;
-            }
-
-            foreach (AuthenticationDescription description in descriptions)
-            {
-                ExternalLoginViewModel login = new ExternalLoginViewModel
-                {
-                    Name = description.Caption,
-                    Url = Url.Route("ExternalLogin", new
-                    {
-                        provider = description.AuthenticationType,
-                        response_type = "token",
-                        client_id = Startup.PublicClientId,
-                        redirect_uri = new Uri(Request.RequestUri, returnUrl).AbsoluteUri,
-                        state = state
-                    }),
-                    State = state
-                };
-                logins.Add(login);
-            }
-
-            return logins;
-        }
 
         // POST api/Account/Register
         [AllowAnonymous]
@@ -547,8 +440,9 @@ namespace Project.Controllers
                 UserName = model.Email,
                 Email = model.Email,
                 FirstName = model.FirstName,
-                LastName = model.LastName,           
-                UserType = "Bidder"
+                LastName = model.LastName,
+                UserType = "Bidder",
+                JoinDate = DateTime.UtcNow
             };
 
             IdentityResult result = await AppUserManager.CreateAsync(user, model.Password);
@@ -557,45 +451,128 @@ namespace Project.Controllers
             {
                 return GetErrorResult(result);
             }
+            else
+            {                
+                var appUser = (from applicationUser in AppUserManager.Users
+                               where applicationUser.Email == user.Email
+                               select applicationUser).SingleOrDefault();
+                if (appUser == null)
+                    return NotFound();
 
-            return StatusCode(HttpStatusCode.NoContent);
+                string[] rolesToAssign = new string[1];
+                rolesToAssign[0] = "User";
+
+                IdentityResult addResult = await this.AppUserManager.AddToRolesAsync(appUser.Id, rolesToAssign);
+
+                if (!addResult.Succeeded)
+                {
+                    ModelState.AddModelError("", "Failed to add user roles");
+                    IdentityResult result2 = await AppUserManager.DeleteAsync(appUser);
+                    return BadRequest(ModelState);
+                }
+                return StatusCode(HttpStatusCode.NoContent);
+            }
         }
 
-        // POST api/Account/RegisterExternal
-        [OverrideAuthentication]
+        /// <summary>
+        /// Assign Roles
+        /// </summary>
+        /// <param name="email"></param>
+        /// <param name="model"></param>
+        /// <returns></returns>
+        [Authorize(Roles = "Administrator")]
         [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
-        [Route("RegisterExternal")]
-        public async Task<IHttpActionResult> RegisterExternal(RegisterExternalBindingModel model)
+        [Route("AssignRoles")]
+        [HttpPut]
+        public async Task<IHttpActionResult> AssignRolesToUser([FromUri] string email, [FromBody] RolesModel model)
         {
-            if (!ModelState.IsValid)
+            string[] rolesToAdd = model.Roles;
+            List<string> rolesToAssign = new List<string>();
+            bool hasManager = false;
+            bool needsManager = false;
+            foreach (var role in rolesToAdd)
             {
+                if (role == "User Manager" || role == "Product Manager")
+                    needsManager = true;
+                if (role == "Manager")
+                    hasManager = true;
+                rolesToAssign.Add(role);
+            }
+            if (!hasManager && needsManager)
+                rolesToAssign.Add("Manager");
+            else if (hasManager && !needsManager)
+            {
+                rolesToAssign.Add("User Manager");
+                rolesToAssign.Add("Product Manager");
+            }
+
+            var appUser = (from applicationUser in AppUserManager.Users
+                           where applicationUser.Email == email
+                           select applicationUser).SingleOrDefault();
+
+            if (appUser == null)
+            {
+                return NotFound();
+            }
+            
+            var currentRoles = await this.AppUserManager.GetRolesAsync(appUser.Id);
+            
+            var rolesNotExists = rolesToAssign.Except(this.AppRoleManager.Roles.Select(x => x.Name)).ToArray();
+
+            if (rolesNotExists.Count() > 0)
+            {
+                ModelState.AddModelError("", string.Format("Roles '{0}' does not exixts in the system", string.Join(",", rolesNotExists)));
                 return BadRequest(ModelState);
             }
 
-            var info = await Authentication.GetExternalLoginInfoAsync();
-            if (info == null)
+            IdentityResult removeResult = await this.AppUserManager.RemoveFromRolesAsync(appUser.Id, currentRoles.ToArray());
+
+            if (!removeResult.Succeeded)
             {
-                return InternalServerError();
+                ModelState.AddModelError("", "Failed to remove user roles");
+                return BadRequest(ModelState);
             }
 
-            var user = new ApplicationUser() { UserName = model.Email, Email = model.Email };
+            IdentityResult addResult = await this.AppUserManager.AddToRolesAsync(appUser.Id, rolesToAssign.ToArray());
 
-            IdentityResult result = await AppUserManager.CreateAsync(user);
-            if (!result.Succeeded)
+            if (!addResult.Succeeded)
             {
-                return GetErrorResult(result);
+                ModelState.AddModelError("", "Failed to add user roles");
+                return BadRequest(ModelState);
             }
 
-            result = await AppUserManager.AddLoginAsync(user.Id, info.Login);
-            if (!result.Succeeded)
-            {
-                return GetErrorResult(result);
-            }
             return Ok();
+
         }
 
-        
+        /// <summary>
+        /// Retrieve Users Roles
+        /// </summary>
+        /// <param name="email"></param>
+        /// <returns></returns>
+        [Authorize(Roles = "Administrator, User Manager, User")]
+        [HostAuthentication(DefaultAuthenticationTypes.ExternalBearer)]
+        [Route("GetUserRoles")]
+        [HttpGet]
+        public async Task<IHttpActionResult> GetUserRoles([FromUri] string email)
+        {
+            var appUser = (from applicationUser in AppUserManager.Users
+                           where applicationUser.Email == email
+                           select applicationUser).SingleOrDefault();
 
+            if (appUser == null)
+                return NotFound();
+
+            var currentRoles = await this.AppUserManager.GetRolesAsync(appUser.Id);
+
+            if (currentRoles == null)
+            {
+                ModelState.AddModelError("", "User Has No Roles");
+                return BadRequest(ModelState);
+            }
+
+            return Ok(currentRoles);
+        }
         #region Helpers
 
         private IAuthenticationManager Authentication
@@ -603,75 +580,32 @@ namespace Project.Controllers
             get { return Request.GetOwinContext().Authentication; }
         }
 
-        
-
-        private class ExternalLoginData
+        private IOrderedQueryable<ApplicationUser> GetOrderExpression(IQueryable<ApplicationUser>user, string orderBy)
         {
-            public string LoginProvider { get; set; }
-            public string ProviderKey { get; set; }
-            public string UserName { get; set; }
-
-            public IList<Claim> GetClaims()
+            IOrderedQueryable<ApplicationUser> v;
+            switch (orderBy)
             {
-                IList<Claim> claims = new List<Claim>();
-                claims.Add(new Claim(ClaimTypes.NameIdentifier, ProviderKey, null, LoginProvider));
-
-                if (UserName != null)
-                {
-                    claims.Add(new Claim(ClaimTypes.Name, UserName, null, LoginProvider));
-                }
-
-                return claims;
+                case "Email":
+                    v = user.OrderBy(u => u.Email);
+                    break;
+                case "JoinDate":
+                    v = user.OrderBy(u => u.JoinDate);
+                    break;
+                case "FirstName":
+                    v = user.OrderBy(u => u.FirstName);
+                    break;
+                case "LastName":
+                    v = user.OrderBy(u => u.LastName);
+                    break;
+                case "UserType":
+                    v = user.OrderBy(u => u.UserType);
+                    break;
+                default:
+                    v = user.OrderBy(u => u.Id);
+                    break;
             }
 
-            public static ExternalLoginData FromIdentity(ClaimsIdentity identity)
-            {
-                if (identity == null)
-                {
-                    return null;
-                }
-
-                Claim providerKeyClaim = identity.FindFirst(ClaimTypes.NameIdentifier);
-
-                if (providerKeyClaim == null || String.IsNullOrEmpty(providerKeyClaim.Issuer)
-                    || String.IsNullOrEmpty(providerKeyClaim.Value))
-                {
-                    return null;
-                }
-
-                if (providerKeyClaim.Issuer == ClaimsIdentity.DefaultIssuer)
-                {
-                    return null;
-                }
-
-                return new ExternalLoginData
-                {
-                    LoginProvider = providerKeyClaim.Issuer,
-                    ProviderKey = providerKeyClaim.Value,
-                    UserName = identity.FindFirstValue(ClaimTypes.Name)
-                };
-            }
-        }
-
-        private static class RandomOAuthStateGenerator
-        {
-            private static RandomNumberGenerator _random = new RNGCryptoServiceProvider();
-
-            public static string Generate(int strengthInBits)
-            {
-                const int bitsPerByte = 8;
-
-                if (strengthInBits % bitsPerByte != 0)
-                {
-                    throw new ArgumentException("strengthInBits must be evenly divisible by 8.", "strengthInBits");
-                }
-
-                int strengthInBytes = strengthInBits / bitsPerByte;
-
-                byte[] data = new byte[strengthInBytes];
-                _random.GetBytes(data);
-                return HttpServerUtility.UrlTokenEncode(data);
-            }
+            return v;
         }
 
         #endregion

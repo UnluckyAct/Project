@@ -58,9 +58,16 @@ namespace Project.Models
 
         public string LastName { get; set; }
 
-        public string Rank { get; set; }
+        public string[] Roles { get; set; }
 
         public string UserType { get; set; }
+        public DateTime JoinDate { get; set; }
         public bool Deleted { get; set; }
+    }
+
+    public class UserTable
+    {
+        public List<UserInfo> UsersList { get; set; }
+        public int Pages { get; set; }
     }
 }

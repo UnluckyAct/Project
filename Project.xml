@@ -4,10 +4,17 @@
         <name>Project</name>
     </assembly>
     <members>
-        <member name="M:Project.Controllers.AccountController.GetUsers">
+        <member name="M:Project.Controllers.AccountController.GetUsersAsync(System.Int32,System.Int32,System.String)">
             <summary>
             Retrieve all users
             </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.UserUnban(System.String)">
+            <summary>
+            Unban User
+            </summary>
+            <param name="email"></param>
             <returns></returns>
         </member>
         <member name="M:Project.Controllers.AccountController.GetUser(System.String)">
@@ -17,7 +24,7 @@
             <param name="id">user id</param>
             <returns></returns>
         </member>
-        <member name="M:Project.Controllers.AccountController.GetUserByEmail(System.String)">
+        <member name="M:Project.Controllers.AccountController.GetUserByEmailAsync(System.String)">
             <summary>
             Retrieve User by Email
             </summary>
@@ -50,6 +57,21 @@
             Update User by Admin
             </summary>
             <param name="model"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.AssignRolesToUser(System.String,Project.Models.RolesModel)">
+            <summary>
+            Assign Roles
+            </summary>
+            <param name="email"></param>
+            <param name="model"></param>
+            <returns></returns>
+        </member>
+        <member name="M:Project.Controllers.AccountController.GetUserRoles(System.String)">
+            <summary>
+            Retrieve Users Roles
+            </summary>
+            <param name="email"></param>
             <returns></returns>
         </member>
     </members>
